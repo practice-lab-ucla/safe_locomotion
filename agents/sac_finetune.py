@@ -8,7 +8,7 @@ class SACFinetune(SAC):
     """CVaR Soft Actor-Critic
 
     :param models: Models used by the agent
-    :type models: C51 model
+    :type models: Gaussian Mixin
     :param memory: Memory to storage the transitions.
                     If it is a tuple, the first element will be used for training and
                     for the rest only the environment transitions will be added

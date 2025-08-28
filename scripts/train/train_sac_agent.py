@@ -20,10 +20,13 @@ set_seed()  # e.g. `set_seed(42)` for fixed seed
 
 # load isaac lab environment
 # launch the simulation app
-from utils import make_gym_environment
+from utils import make_isaac_environment
 
-env = make_gym_environment(
-    task="Safe-Locomotion-Base-v0", num_envs=100, headless=True, video=True,
+env = make_isaac_environment(
+    task="Safe-Locomotion-Base-v0",
+    num_envs=100,
+    headless=True,
+    video=True,
 )
 
 env = wrap_env(env)
@@ -37,7 +40,17 @@ memory = RandomMemory(memory_size=15000, num_envs=env.num_envs, device=device)
 import numpy as np
 from gymnasium.spaces import Box
 
-action_space = Box(low=-np.pi, high=np.pi)
+low = np.zeros(env.action_space.shape)
+high = np.zeros_like(low)
+
+low[0:4] = -2
+high[0:4] = 2
+low[4:8] = -2
+high[4:8] = 2
+low[8:12] = -2
+high[8:12] = 2
+
+action_space = Box(low=low, high=high)
 
 
 # instantiate the agent's models (function approximators).
@@ -75,7 +88,7 @@ cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": dev
 # logging to TensorBoard and write checkpoints (in timesteps)
 cfg["experiment"]["write_interval"] = 800
 cfg["experiment"]["checkpoint_interval"] = 8000
-cfg["experiment"]["directory"] = "/tmp/runs"
+cfg["experiment"]["directory"] = "runs/sac"
 cfg["experiment"]["wandb"] = True
 
 agent = SAC(

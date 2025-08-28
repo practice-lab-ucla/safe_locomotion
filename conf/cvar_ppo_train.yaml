@@ -1,0 +1,8 @@
+version_base: "1.1"
+
+defaults:
+  - _self_
+  - env: base
+  - agent: cvar_ppo
+  - trainer: sequential
+seed: 42

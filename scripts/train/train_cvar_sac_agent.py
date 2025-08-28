@@ -19,9 +19,11 @@ set_seed()  # e.g. `set_seed(42)` for fixed seed
 
 # load isaac lab environment
 # launch the simulation app
-from utils import make_gym_environment
+from utils import make_isaac_environment
 
-env = make_gym_environment(task="Safe-Locomotion-Base-v0", num_envs=100, headless=True)
+env = make_isaac_environment(
+    task="Safe-Locomotion-Base-v0", num_envs=100, headless=True
+)
 env = wrap_env(env)
 device = env.device
 
@@ -79,8 +81,9 @@ cfg["cvar_alpha"] = 1 - 0.01
 # logging to TensorBoard and write checkpoints (in timesteps)
 cfg["experiment"]["write_interval"] = 800
 cfg["experiment"]["checkpoint_interval"] = 8000
-cfg["experiment"]["directory"] = "/tmp/runs/"
-cfg["experiment"]["wandb"] = False
+cfg["experiment"]["directory"] = "runs/finetune_sac"
+cfg["experiment"]["wandb"] = True
+cfg["experiment"]["wandb_kwargs"] = {}
 
 agent = CVaRSAC(
     models=models,

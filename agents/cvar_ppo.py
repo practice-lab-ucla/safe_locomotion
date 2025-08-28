@@ -11,7 +11,7 @@ from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
 
 CVAR_PPO_DEFAULT_CONFIG = PPO_DEFAULT_CONFIG | {
     "cvar_alpha": 0.5,
-    "cvar_beta": 1,
+    "cvar_beta": "adaptive",
     "v_learning_rate": 1e-2,
     "lam_learning_rate": 1e-2,
     "v_gradient_steps": 1,
@@ -22,9 +22,15 @@ CVAR_PPO_DEFAULT_CONFIG = PPO_DEFAULT_CONFIG | {
 class CVARPPO(PPO):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._cvar_alpha = self.cfg.get("cvar_alpha", 0.5)
+        self._cvar_alpha = self.cfg.get("cvar_alpha", 0.25)
         assert self._cvar_alpha > 0 and self._cvar_alpha < 1, "0 < alpha < 1"
-        self._cvar_beta = self.cfg.get("cvar_beta", 1e2)  # cvar constraint
+        self._cvar_beta = self.cfg.get("cvar_beta", "adaptive")  # cvar constraint
+        self._form = self.cfg.get("form", "lagrangian")
+        self._lam_max = self.cfg.get("lam_max", self._cvar_alpha)
+        self._warmup = self.cfg.get("warmup", 0)
+
+        if self._cvar_beta == "adaptive":
+            self._moving_beta = 0
 
         # value-at-risk optimizer
         self._v = nn.Parameter(
@@ -35,10 +41,17 @@ class CVARPPO(PPO):
         )
         self._v_gradient_steps = self.cfg.get("v_gradient_steps", 1)
 
-        # multiplier optimizer
-        self._lam = torch.tensor(0.0, device=self.device)
-        self._lam_learning_rate = self.cfg.get("lam_learning_rate", self._learning_rate)
-        self._lam_gradient_steps = self.cfg.get("lam_gradient_steps", 1)
+        if self._form == "lagrangian":
+            # multiplier optimizer
+            self._lam = torch.tensor(0.0, device=self.device)
+            self._lam_learning_rate = self.cfg.get(
+                "lam_learning_rate", self._learning_rate
+            )
+            self._lam_gradient_steps = self.cfg.get("lam_gradient_steps", 1)
+        elif self._form == "epigraph":
+            pass
+        else:
+            raise NotImplementedError
 
     def _update(self, timestep: int, timesteps: int) -> None:
         """Algorithm's main update step
@@ -145,6 +158,14 @@ class CVARPPO(PPO):
         cumulative_v = 0
         cumulative_lambda = 0
         cumulative_cvar = 0
+        cumulative_cvar_p1 = 0
+
+        # update var and dual variables
+        def cvar_left(var_estimates, alpha, returns):
+            return (
+                var_estimates
+                - (1 / alpha) * torch.clamp_min(var_estimates - returns, 0).mean()
+            )
 
         # learning epochs
         for epoch in range(self._learning_epochs):
@@ -216,21 +237,60 @@ class CVARPPO(PPO):
                         sampled_returns, predicted_values
                     )
 
-                    # compute constraint penalization
-                    cvar_loss = (
+                if self._form == "lagrangian":
+                    # optimization step
+                    cvar_surrogate = (
                         self._lam
+                        / self._cvar_alpha
+                        * (ratio * torch.clamp_min(self._v - sampled_returns, 0))
+                    )
+
+                    cvar_surrogate_clipped = (
+                        self._lam
+                        / self._cvar_alpha
+                        * (
+                            torch.clip(
+                                ratio, 1.0 - self._ratio_clip, 1.0 + self._ratio_clip
+                            )
+                            * torch.clamp_min(self._v - sampled_returns, 0)
+                        )
+                    )
+
+                    cvar_loss = torch.min(cvar_surrogate, cvar_surrogate_clipped).mean()
+
+                    self.optimizer.zero_grad()
+                    self.scaler.scale(
+                        policy_loss + entropy_loss + value_loss + cvar_loss
+                    ).backward()
+                elif self._form == "epigraph":
+                    cvar_loss = (
+                        1
                         / self._cvar_alpha
                         * (
                             next_log_prob
                             * torch.clamp_min(self._v - sampled_returns, 0)
                         ).mean()
                     )
-
-                # optimization step
-                self.optimizer.zero_grad()
-                self.scaler.scale(
-                    policy_loss + entropy_loss + value_loss + cvar_loss
-                ).backward()
+                    with torch.no_grad():
+                        cvar_return = cvar_left(
+                            self._v, self._cvar_alpha, sampled_returns
+                        )
+                    self.optimizer.zero_grad()
+                    if self._cvar_beta == "adaptive":
+                        if cvar_return.item() < self._moving_beta:
+                            self.scaler.scale(cvar_loss + value_loss).backward()
+                        else:
+                            self.scaler.scale(
+                                policy_loss + entropy_loss + value_loss
+                            ).backward()
+                        self._moving_beta = 0.3 * self._moving_beta + 0.7 * self._v
+                    else:
+                        if cvar_return.item() < self._cvar_beta:
+                            self.scaler.scale(cvar_loss + value_loss).backward()
+                        else:
+                            self.scaler.scale(
+                                policy_loss + entropy_loss + value_loss
+                            ).backward()
 
                 if config.torch.is_distributed:
                     self.policy.reduce_parameters()
@@ -254,31 +314,50 @@ class CVARPPO(PPO):
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
 
-                # update var and dual variables
-                def cvar_left(var_estimates, alpha, returns):
-                    return (
-                        var_estimates
-                        - (1 / alpha)
-                        * torch.clamp_min(var_estimates - returns, 0).mean()
-                    )
+                detached_returns = sampled_returns.detach()
+                cvar = cvar_left(self._v, self._cvar_alpha, sampled_returns.detach())
 
                 for _ in range(self._v_gradient_steps):
-                    cvar = cvar_left(
-                        self._v, self._cvar_alpha, sampled_returns.detach()
-                    )
+                    cvar = cvar_left(self._v, self._cvar_alpha, detached_returns)
                     negative_cvar = -cvar
                     self._v_optimizer.zero_grad()
                     negative_cvar.backward()
                     nn.utils.clip_grad_norm_([self._v], self._grad_norm_clip)
                     self._v_optimizer.step()
 
-                with torch.no_grad():
-                    for _ in range(self._lam_gradient_steps):
-                        self._lam = self._lam + self._lam_learning_rate * (
-                            self._cvar_beta
-                            - cvar_left(self._v, self._cvar_alpha, sampled_returns)
-                        )
-                        self._lam = torch.clamp(self._lam, 0, timestep / timesteps * 2)
+                varp1 = torch.quantile(detached_returns, 0.1, dim=0)
+                cvarp1 = detached_returns[detached_returns < varp1].mean()
+
+                if self._form == "lagrangian":
+                    with torch.no_grad():
+                        for _ in range(self._lam_gradient_steps):
+                            if self._cvar_beta == "adaptive":
+                                self._lam = self._lam + self._lam_learning_rate * (
+                                    self._moving_beta
+                                    - cvar_left(
+                                        self._v, self._cvar_alpha, sampled_returns
+                                    )
+                                )
+                                self._moving_beta = (
+                                    0.3 * self._moving_beta + 0.7 * self._v
+                                )
+                            else:
+                                self._lam = self._lam + self._lam_learning_rate * (
+                                    self._cvar_beta
+                                    - cvar_left(
+                                        self._v, self._cvar_alpha, sampled_returns
+                                    )
+                                )
+                            if self._lam_max == "adaptive":
+                                self._lam = torch.clamp(
+                                    self._lam, 0, 0.25 * (timestep / timesteps) ** 2
+                                )
+                            else:
+                                self._lam = torch.clamp(
+                                    self._lam,
+                                    0,
+                                    self._lam_max * float(timestep > self._warmup),
+                                )
 
                 # update cumulative losses
                 cumulative_policy_loss += policy_loss.item()
@@ -288,8 +367,10 @@ class CVARPPO(PPO):
                 cumulative_cvar_loss += cvar_loss.item()
 
                 cumulative_v += self._v.item()
-                cumulative_lambda += self._lam.item()
+                if self._form == "lagrangian":
+                    cumulative_lambda += self._lam.item()
                 cumulative_cvar += cvar.item()
+                cumulative_cvar_p1 += cvarp1.item()
 
             # update learning rate
             if self._learning_rate_scheduler:
@@ -319,10 +400,11 @@ class CVARPPO(PPO):
                 "Loss / Entropy loss",
                 cumulative_entropy_loss / (self._learning_epochs * self._mini_batches),
             )
-        self.track_data(
-            "Loss / CVaR constraint penalization",
-            cumulative_cvar_loss / (self._learning_epochs * self._mini_batches),
-        )
+        if self._form == "lagrangian":
+            self.track_data(
+                "Loss / CVaR loss",
+                cumulative_cvar_loss / (self._learning_epochs * self._mini_batches),
+            )
 
         self.track_data(
             "Policy / Standard deviation",
@@ -333,12 +415,16 @@ class CVARPPO(PPO):
             self.track_data("Learning / Learning rate", self.scheduler.get_last_lr()[0])
 
         self.track_data(
-            "Coefficient / Value-at-Risk",
+            f"Coefficient / VaR {self._cvar_alpha}",
             cumulative_v / (self._learning_epochs * self._mini_batches),
         )
         self.track_data(
-            "Coefficient / Conditional Value-at-Risk",
+            f"Coefficient / CVaR {self._cvar_alpha}",
             cumulative_cvar / (self._learning_epochs * self._mini_batches),
+        )
+        self.track_data(
+            "Coefficient / CVaR 0.1",
+            cumulative_cvar_p1 / (self._learning_epochs * self._mini_batches),
         )
         self.track_data(
             "Coefficient / Lagrangian multiplier",

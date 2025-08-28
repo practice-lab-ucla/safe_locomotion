@@ -19,10 +19,10 @@ set_seed()  # e.g. `set_seed(42)` for fixed seed
 
 # load isaac lab environment
 # launch the simulation app
-from utils import make_gym_environment
+from utils import make_isaac_environment
 
-env = make_gym_environment(
-    task="Safe-Locomotion-Base-v0", num_envs=100, headless=False
+env = make_isaac_environment(
+    task="Safe-Locomotion-Base-v0", num_envs=100, headless=True
 )
 env = wrap_env(env)
 device = env.device
@@ -52,14 +52,17 @@ action_space = Box(low=low, high=high)
 # https://skrl.readthedocs.io/en/latest/api/agents/sac.html#models
 models = {}
 models["policy"] = StochasticActorMLP(
-    env.observation_space, 
-    action_space, 
-    device, 
-    clip_actions=False, 
-    elementwise_affine=False
+    env.observation_space,
+    action_space,
+    device,
+    clip_actions=False,
+    elementwise_affine=False,
 )
 models["policy"].load_state_dict(
-    torch.load("/home/danny/Documents/safe_locomotion/checkpoints/ppo_without_adaptation.pt", map_location=device)["policy"]
+    torch.load(
+        "/home/danny/Documents/safe_locomotion/checkpoints/ppo_without_adaptation.pt",
+        map_location=device,
+    )["policy"]
 )
 
 models["critic_1"] = C51(env.observation_space, action_space, device)
@@ -89,7 +92,7 @@ cfg["cvar_alpha"] = 1 - 0.01
 # logging to TensorBoard and write checkpoints (in timesteps)
 cfg["experiment"]["write_interval"] = 200
 cfg["experiment"]["checkpoint_interval"] = 8000
-cfg["experiment"]["directory"] = "/tmp/runs/"
+cfg["experiment"]["directory"] = "runs/finetune_cvar_sac"
 cfg["experiment"]["wandb"] = True
 cfg["freeze_actor_until"] = 10000
 
@@ -103,7 +106,7 @@ agent = CVaRSAC(
 )
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 80000, "headless": False}
+cfg_trainer = {"timesteps": 80000, "headless": True}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # start training

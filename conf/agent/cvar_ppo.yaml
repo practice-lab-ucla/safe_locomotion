@@ -1,0 +1,37 @@
+rollouts:       24
+learning_epochs: 5
+mini_batches:    4
+discount_factor: 0.99
+lambda:          0.95
+learning_rate:   1e-3
+learning_rate_scheduler: KLAdaptiveRL
+learning_rate_scheduler_kwargs:
+  kl_threshold: 0.01
+random_timesteps: 0
+learning_starts:  0
+grad_norm_clip:   1.0
+ratio_clip:       0.2
+value_clip:       0.2
+clip_predicted_values: true
+entropy_loss_scale: 0.01
+value_loss_scale:   1.0
+kl_threshold:       0
+
+cvar_alpha: 0.5
+lam_max:    0.25
+warmup: 5400
+cvar_beta:  "adaptive"
+form:       "lagrangian"
+
+elementwise_affine: true
+
+state_preprocessor: RunningStandardScaler
+value_preprocessor: RunningStandardScaler
+experiment:
+  write_interval:      40
+  checkpoint_interval: 1500
+  directory:          "/home/danny/Documents/safe_locomotion/runs/cvar_ppo/${env.task}/${seed}"
+  wandb:               true
+  experiment_name: "alpha${agent.cvar_alpha}_${agent.cvar_beta}_lammax${agent.lam_max}_${agent.elementwise_affine}_warmup${agent.warmup}"
+memory:
+  memory_size: ${agent.rollouts}

@@ -1,0 +1,3 @@
+task: "Safe-Locomotion-Base-v0"
+num_envs: 2048
+headless: true

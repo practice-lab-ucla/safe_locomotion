@@ -6,7 +6,7 @@
 import math
 
 from isaaclab.utils import configclass
-from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnvCfg
+from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
@@ -14,7 +14,11 @@ from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import TerminationTermCfg as TerminationTerm
 from isaaclab_tasks.manager_based.locomotion.velocity import mdp
 from isaaclab_assets.robots.unitree import UNITREE_GO2_CFG  # isort: skip
-from isaaclab_tasks.manager_based.locomotion.velocity.config.go2.flat_env_cfg import UnitreeGo2FlatEnvCfg
+from isaaclab_tasks.manager_based.locomotion.velocity.config.go2.flat_env_cfg import (
+    UnitreeGo2FlatEnvCfg,
+)
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
     MySceneCfg,
     CommandsCfg,
@@ -52,70 +56,14 @@ class FastCommandsCfg:
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
-    time_out = TerminationTerm(func=mdp.time_out, time_out=True)
+    time_out = TerminationTerm(func=mdp.time_out)
     base_contact = TerminationTerm(
         func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"),
+            "threshold": 1.0,
+        },
     )
-    check_fall = TerminationTerm(
-        func=check_fall
-    )
-
-
-@configclass
-class UnitreeGo2FlatBaseCfg(UnitreeGo2FlatEnvCfg):
-    """Baseline environment"""
-
-    def __post_init__(self):
-        # post init of parent
-        super().__post_init__()
-
-        self.terminations = TerminationsCfg()
-
-        # reduce action scale
-        self.actions.joint_pos.scale = 0.25
-
-        # task related reward
-        self.rewards.track_lin_vel_xy_exp.weight = 1.5
-        self.rewards.track_ang_vel_z_exp.weight = 0.75
-
-        # set unrelated penalty reward to 0
-        self.rewards.feet_air_time.weight = 0
-        self.rewards.undesired_contacts = None
-        self.rewards.lin_vel_z_l2.weight = 0
-
-        self.rewards.ang_vel_xy_l2.weight = 0
-
-
-class ExpObservationCfg(ObservationsCfg):
-    @configclass
-    class JointPos(ObsGroup):
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
-
-    joint_position: JointPos = JointPos()
-
-
-@configclass
-class UnitreeGo2FlatBaseExpCfg(UnitreeGo2FlatEnvCfg):
-    observations: ExpObservationCfg = ExpObservationCfg()
-
-    def __post_init__(self):
-        # post init of parent
-        super().__post_init__()
-
-        # reduce action scale
-        self.actions.joint_pos.scale = 0.25
-
-        # task related reward
-        self.rewards.track_lin_vel_xy_exp.weight = 1.5
-        self.rewards.track_ang_vel_z_exp.weight = 0.75
-
-        # set unrelated penalty reward to 0
-        self.rewards.feet_air_time.weight = 0
-        self.rewards.undesired_contacts = None
-        self.rewards.lin_vel_z_l2.weight = 0
-        self.rewards.ang_vel_xy_l2.weight = 0
-        self.rewards.action_rate_l2.weight = 0
 
 
 @configclass
@@ -149,8 +97,8 @@ class RandLowEventCfg:
 
 
 @configclass
-class UnitreeGo2FlatRandLowCfg(ManagerBasedRLEnvCfg):
-    scene: MySceneCfg = MySceneCfg(num_envs=2048, env_spacing=2.5)
+class RandLowCfg(ManagerBasedRLEnvCfg):
+    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=2.5)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     commands: FastCommandsCfg = FastCommandsCfg()
@@ -161,7 +109,7 @@ class UnitreeGo2FlatRandLowCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         # general settings
         self.decimation = 4
-        self.episode_length_s = 20.0
+        self.episode_length_s = 40.0
         # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
@@ -176,23 +124,15 @@ class UnitreeGo2FlatRandLowCfg(ManagerBasedRLEnvCfg):
         self.scene.height_scanner = None
         self.observations.policy.height_scan = None
 
-        if self.scene.height_scanner is not None:
-            self.scene.height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.contact_forces is not None:
-            self.scene.contact_forces.update_period = self.sim.dt
-
         # reduce action scale
         self.actions.joint_pos.scale = 0.25
 
         # task related reward
         self.rewards.track_lin_vel_xy_exp.weight = 1.5
         self.rewards.track_ang_vel_z_exp.weight = 0.75
-
-        # set unrelated penalty reward to 0
-        self.rewards.feet_air_time = None
+        self.rewards.flat_orientation_l2.weight = -2.5
         self.rewards.undesired_contacts = None
-        self.rewards.lin_vel_z_l2.weight = 0
-        self.rewards.ang_vel_xy_l2.weight = 0
+        self.rewards.feet_air_time = None
 
 
 @configclass
@@ -208,13 +148,6 @@ class RandHighEventCfg:
             "torque_range": (-2, 2),
         },
         interval_range_s=(3, 8),
-    )
-
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(3, 8),
-        params={"velocity_range": {"x": (-3, 3), "y": (-3, 3)}},
     )
 
     add_base_mass = EventTerm(
@@ -257,13 +190,13 @@ class RandHighEventCfg:
 
 
 @configclass
-class UnitreeGo2FlatRandHighCfg(ManagerBasedRLEnvCfg):
+class RandHighCfg(ManagerBasedRLEnvCfg):
     """Environment with larger randomization range"""
 
     scene: MySceneCfg = MySceneCfg(num_envs=500, env_spacing=2.5)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
-    commands: CommandsCfg = CommandsCfg()
+    commands: FastCommandsCfg = FastCommandsCfg()
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: RandHighEventCfg = RandHighEventCfg()
@@ -271,7 +204,7 @@ class UnitreeGo2FlatRandHighCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         # general settings
         self.decimation = 4
-        self.episode_length_s = 20.0
+        self.episode_length_s = 40.0
         # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
@@ -286,20 +219,12 @@ class UnitreeGo2FlatRandHighCfg(ManagerBasedRLEnvCfg):
         self.scene.height_scanner = None
         self.observations.policy.height_scan = None
 
-        if self.scene.height_scanner is not None:
-            self.scene.height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.contact_forces is not None:
-            self.scene.contact_forces.update_period = self.sim.dt
-
         # reduce action scale
         self.actions.joint_pos.scale = 0.25
 
         # task related reward
         self.rewards.track_lin_vel_xy_exp.weight = 1.5
         self.rewards.track_ang_vel_z_exp.weight = 0.75
-
-        # set unrelated penalty reward to 0
-        self.rewards.feet_air_time = None
+        self.rewards.flat_orientation_l2.weight = -2.5
         self.rewards.undesired_contacts = None
-        self.rewards.lin_vel_z_l2.weight = 0
-        self.rewards.ang_vel_xy_l2.weight = 0
+        self.rewards.feet_air_time = None

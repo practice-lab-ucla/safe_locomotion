@@ -1,1 +1,1 @@
-from .utils import make_gym_environment
+from .utils import make_isaac_environment
