@@ -71,10 +71,8 @@ def play_single_policy(env, app, policy, headless, save_path, meta):
     with torch.inference_mode():
         while app.app.is_running():
             # record obs_t
-            print(i)
             i += 1
-            print(obs.shape)
-            obs[:, 9:12] = torch.clamp(obs[:, 9:12], max=0.3, min=-0.3)
+            obs[:, 9:12] = torch.clamp(obs[:, 9:12], max=0.5, min=-0.5)
 
             obs_list.append(to_numpy(obs))
 

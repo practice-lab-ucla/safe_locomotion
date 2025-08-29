@@ -11,22 +11,22 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-
-
-def update_joint_gain_range(
-        env: ManagerBasedRLEnv, 
-        env_ids: Sequence[int], 
-        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-        num_steps=5000,
-        base_ratio=1.25,
-        gain_max_start=26,
-        damp_max_start=0.5
+def switch_command_mode(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    switch_every=1500,
 ):
-    if "randomize_joint_gain" in env.event_manager.active_terms["reset"]:
-        ratio = base_ratio ** (env.common_step_counter // num_steps)
-        env_term = env.event_manager.get_term_cfg("randomize_joint_gain")
-        past_gain_range = env_term.params["stiffness_distribution_params"]
-        past_damp_range = env_term.params["damping_distribution_params"]
-        env_term.params["stiffness_distribution_params"] = (past_gain_range[0], gain_max_start*ratio)
-        env_term.params["damping_distribution_params"] = (past_damp_range[0], damp_max_start*ratio)
-        env.event_manager.set_term_cfg("randomize_joint_gain", env_term)
+    if "base_velocity" in env.command_manager.active_terms:
+        d = env.common_step_counter // switch_every
+        command_term = env.command_manager.get_term("base_velocity").cfg
+
+        if d % 2 == 0:
+            command_term.ranges.lin_vel_x = (0.3, 1.0)
+            command_term.ranges.lin_vel_y = (-0.2, 0.2)
+        else:
+            command_term.ranges.lin_vel_x = (-1.0, 1.0)
+            command_term.ranges.lin_vel_y = (-1.0, 1.0)
+
+        env.command_manager._terms["base_velocity"].cfg = command_term
+        # print("hi")

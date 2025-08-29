@@ -10,9 +10,10 @@ from isaaclab_tasks.manager_based.locomotion.velocity.config.go2.flat_env_cfg im
 )
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from .mdp.rewards import orientation_penalty
-from .mdp.events import reset_root_state_fixed, randomizing_stiffness_and_gain
+from .mdp.events import reset_root_state_fixed
 from .mdp.commands import StraightLineVelocityCommandCfg
-from .mdp.curriculum import update_joint_gain_range
+from .mdp.curriculum import switch_command_mode
+from .mdp import push_by_setting_velocity
 
 
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -25,6 +26,7 @@ class BaseCfg(UnitreeGo2FlatEnvCfg):
     """
     Base environment
     """
+
     def __post_init__(self):
         super().__post_init__()
 
@@ -33,15 +35,11 @@ class BaseCfg(UnitreeGo2FlatEnvCfg):
 class BaseCfg1(BaseCfg):
     """
     Base environment but with domain randomization
-    curriculum for joint gain and 
+    curriculum for joint gain and
     """
+
     def __post_init__(self):
         super().__post_init__()
-        # self.events.randomize_joint_gain = EventTerm(
-        #     func=randomizing_stiffness_and_gain,
-        #     params={ "gain_range": (25, 26), "damp_range": (0.5, 0.6) },
-        #     mode="reset"
-        # )
 
         self.events.randomize_joint_gain = EventTerm(
             func=env_mdp.randomize_actuator_gains,
@@ -49,23 +47,66 @@ class BaseCfg1(BaseCfg):
             mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-                "stiffness_distribution_params": (25, 26),
-                "damping_distribution_params": (0.5, 0.6),
+                "stiffness_distribution_params": (20, 30),
+                "damping_distribution_params": (0.2, 0.7),
                 "operation": "abs",
                 "distribution": "log_uniform",
             },
         )
-        self.curriculum.joint_gain_curriculum = CurrTerm(
-            func=update_joint_gain_range,
-            params={ "num_steps": 5000, "gain_max_start": 26, "damp_max_start": 0.6 }
+
+        self.events.add_base_mass = EventTerm(
+            func=mdp.randomize_rigid_body_mass,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names="base"),
+                "mass_distribution_params": (-2.0, 2.0),
+                "operation": "add",
+            },
         )
 
+        self.events.random_friction = EventTerm(
+            func=mdp.randomize_rigid_body_material,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+                "static_friction_range": (0.6, 0.9),
+                "dynamic_friction_range": (0.4, 0.7),
+                "restitution_range": (0.0, 0.0),
+                "num_buckets": 64,
+            },
+        )
+
+        self.events.push_robot = EventTerm(
+            func=push_by_setting_velocity,
+            mode="interval",
+            interval_range_s=(5, 10),
+            params={"magnitude": 0.75},
+        )
+
+        self.curriculum.switch_command_range = CurrTerm(
+            func=switch_command_mode, params={"switch_every": 5000}
+        )
+
+        self.rewards.action_rate_l2.weight = -0.05
+        self.rewards.feet_air_time.weight = 0.35
+
+
+@configclass
+class BaseCfg1Playback(BaseCfg1):
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.random_friction = None
+        self.events.push_robot = None
+        self.observations.policy.base_ang_vel.noise = None
+        self.observations.policy.base_lin_vel.noise = None
+        self.observations.policy.projected_gravity.noise = None
 
 @configclass
 class BaseCfgTest(UnitreeGo2FlatEnvCfg):
     """
     Base environment
     """
+
     def __post_init__(self):
         super().__post_init__()
         self.episode_length_s = 15.0
@@ -78,28 +119,38 @@ class BaseCfgVisualize(BaseCfgTest):
     """
     Base environment
     """
+
     def __post_init__(self):
         super().__post_init__()
         self.scene.env_spacing = 2.5
         self.episode_length_s = 30.0
-        self.commands.base_velocity.goal_vel_visualizer_cfg.markers["arrow"].scale = (0.01, 0.01, 0.01)
+        self.commands.base_velocity.goal_vel_visualizer_cfg.markers["arrow"].scale = (
+            0.01,
+            0.01,
+            0.01,
+        )
 
         self.events.reset_base = EventTerm(
             func=reset_root_state_fixed,
             mode="reset",
             params={
                 "pose": {"x": 0.2, "yaw": np.deg2rad(90)},
-                "velocity": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+                "velocity": {
+                    "x": 0.0,
+                    "y": 0.0,
+                    "z": 0.0,
+                    "roll": 0.0,
+                    "pitch": 0.0,
+                    "yaw": 0.0,
+                },
                 "pose_is_delta": True,
                 "vel_is_delta": False,
-                "add_env_origins": True
+                "add_env_origins": True,
             },
         )
 
         self.commands.base_velocity = StraightLineVelocityCommandCfg(
-            asset_name="robot",
-            resampling_time_range=(10.0, 10.0),
-            debug_vis=True
+            asset_name="robot", resampling_time_range=(10.0, 10.0), debug_vis=True
         )
 
 
@@ -108,29 +159,29 @@ class MoreRewardCfg(BaseCfg):
     """
     Base environment, whereas the reward signal is dependent on magnitude of command
     """
+
     def __post_init__(self):
 
         def track_lin_vel_xy_exp_norm(
-            env: ManagerBasedRLEnv, 
-            std: float, 
-            command_name: str, 
-            asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+            env: ManagerBasedRLEnv,
+            std: float,
+            command_name: str,
+            asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
         ) -> torch.Tensor:
             reward = mdp.track_lin_vel_xy_exp(env, std, command_name, asset_cfg)
             vel = env.command_manager.get_command(command_name)[:, :2]
             return 0.5 * (torch.norm(vel) + 1) * reward
 
-
         def track_ang_vel_z_exp_norm(
-            env: ManagerBasedRLEnv, 
-            std: float, 
-            command_name: str, 
-            asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+            env: ManagerBasedRLEnv,
+            std: float,
+            command_name: str,
+            asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
         ) -> torch.Tensor:
             reward = mdp.track_ang_vel_z_exp(env, std, command_name, asset_cfg)
             vel = env.command_manager.get_command(command_name)[:, 2]
             return 0.5 * (torch.norm(vel) + 1) * reward
-    
+
         super().__post_init__()
         self.rewards.track_lin_vel_xy_exp.func = track_lin_vel_xy_exp_norm
         self.rewards.track_ang_vel_z_exp.func = track_ang_vel_z_exp_norm
@@ -141,7 +192,8 @@ class FasterCfg(BaseCfg):
     """
     Base environment with faster velocity command
     """
+
     def __post_init__(self):
         super().__post_init__()
-        self.commands.base_velocity.ranges.lin_vel_x=(-1.0, 3.0)
-        self.commands.base_velocity.ranges.lin_vel_y=(-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 3.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-1.5, 1.5)
